@@ -1,9 +1,14 @@
 /* HandCraft — камерадан қол танып, ауада сызу + Minecraft блоктарын қою */
+import * as THREE from 'three';
+
+// MediaPipe глобалдары (UMD script-тен)
+const Hands = window.Hands;
+const Camera = window.Camera;
 
 // ---------- Three.js сахна ----------
 const sceneEl = document.getElementById('scene');
 const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
-renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5));
 renderer.setSize(window.innerWidth, window.innerHeight);
 sceneEl.appendChild(renderer.domElement);
 
@@ -183,7 +188,7 @@ const hands = new Hands({
 });
 hands.setOptions({
   maxNumHands: 1,
-  modelComplexity: 1,
+  modelComplexity: 0,        // жеңіл модель (RAM аз машинаға)
   minDetectionConfidence: 0.6,
   minTrackingConfidence: 0.6
 });
