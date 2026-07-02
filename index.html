@@ -3,18 +3,15 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>HandCraft — қолмен блок қою</title>
+  <title>NeonDraw — қолмен жарқыраған сызық</title>
   <link rel="stylesheet" href="style.css" />
 </head>
 <body>
-  <!-- Камера ағыны (артқы фон ретінде айналы көрсетіледі) -->
+  <!-- Камера ағыны (артқы фон, айналы, күңгірт) -->
   <video id="cam" playsinline></video>
 
-  <!-- Қол қаңқасын салатын overlay -->
+  <!-- Жарқыраған сызық + қол қаңқасы -->
   <canvas id="overlay"></canvas>
-
-  <!-- Three.js 3D әлемі -->
-  <div id="scene"></div>
 
   <!-- UI -->
   <div id="hud">
@@ -24,19 +21,16 @@
     </div>
     <div class="palette" id="palette"></div>
     <div class="hint">
-      ✊ жұдырық — айналдыру · ☝️ көрсеткіш — нысана · 🤏 pinch — блок қою ·
-      ✌️ V (екі саусақ) — блок өшіру · 🖐️ алақан — сызық сызу
+      ☝️ көрсеткіш — сызу · 🤏 pinch — ұстап жүру · ✌️ V — кесу · ✊/🖐️ — тыныш ·
+      <b>C</b> — тазарту
     </div>
   </div>
 
   <div id="loader">Камера мен модель жүктелуде…<br /><small>рұқсат сұралса — «Allow» бас</small></div>
 
-  <!-- CDN кітапханалар -->
-  <script type="importmap">
-    { "imports": { "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js" } }
-  </script>
+  <!-- MediaPipe (қол тану) -->
   <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4.1675469240/hands.js" crossorigin="anonymous"></script>
   <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils@0.3.1675466862/camera_utils.js" crossorigin="anonymous"></script>
-  <script type="module" src="app.js"></script>
+  <script src="app.js"></script>
 </body>
 </html>

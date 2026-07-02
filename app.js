@@ -1,257 +1,132 @@
-/* HandCraft — камерадан қол танып, ауада сызу + Minecraft блоктарын қою */
-import * as THREE from 'three';
+/* NeonDraw — камерадан қол танып, ауада жарқыраған сызық сызу,
+   сызықты кез келген жерінен ұстап-жылжыту, кесу */
 
-// MediaPipe глобалдары (UMD script-тен)
-const Hands = window.Hands;
-const Camera = window.Camera;
+// ---------- Canvas ----------
+const overlay = document.getElementById('overlay');
+const ctx = overlay.getContext('2d');
+const video = document.getElementById('cam');
+const loader = document.getElementById('loader');
 
-// ---------- Three.js сахна ----------
-const sceneEl = document.getElementById('scene');
-const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
-renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5));
-renderer.setSize(window.innerWidth, window.innerHeight);
-sceneEl.appendChild(renderer.domElement);
+// ---------- Неон түстер ----------
+const COLORS = ['#00e5ff', '#ff2bd6', '#7cff3a', '#ffe14d', '#ff6a3d', '#ffffff'];
+let currentColor = 0;
 
-const scene = new THREE.Scene();
-const camera = new THREE.PerspectiveCamera(55, window.innerWidth / window.innerHeight, 0.1, 200);
+// ---------- Сызық деректері ----------
+// stroke = { pts: [{x,y}...], color }
+let strokes = [];
+let activeStroke = null;   // сызу кезінде
+let grabbed = null;        // { stroke, lastX, lastY } — ұсталған сызық
+const MIN_DIST = 6;        // сызу кезіндегі минимал нүкте қашықтығы
+const GRAB_R = 55;         // ұстау/кесу радиусы (px)
 
-// Орбита параметрлері (жұдырықпен айналдырамыз)
-const orbit = { az: 0.6, pol: 0.9, r: 16, target: new THREE.Vector3(0, 0, 0) };
-function updateCamera() {
-  const sp = Math.sin(orbit.pol), cp = Math.cos(orbit.pol);
-  camera.position.set(
-    orbit.target.x + orbit.r * sp * Math.sin(orbit.az),
-    orbit.target.y + orbit.r * cp,
-    orbit.target.z + orbit.r * sp * Math.cos(orbit.az)
-  );
-  camera.lookAt(orbit.target);
-}
-updateCamera();
+// ---------- Қосымша функциялар ----------
+function dist2D(ax, ay, bx, by) { return Math.hypot(ax - bx, ay - by); }
 
-// Жарық
-scene.add(new THREE.HemisphereLight(0xffffff, 0x334455, 0.9));
-const dir = new THREE.DirectionalLight(0xffffff, 0.8);
-dir.position.set(6, 12, 4);
-scene.add(dir);
-
-// Grid ground
-const GRID = 16;
-const grid = new THREE.GridHelper(GRID, GRID, 0x66ccff, 0x224455);
-grid.position.y = 0;
-scene.add(grid);
-
-// Ground жазықтығы (raycast үшін, көрінбейтін)
-const groundGeo = new THREE.PlaneGeometry(GRID, GRID);
-const ground = new THREE.Mesh(groundGeo, new THREE.MeshBasicMaterial({ visible: false }));
-ground.rotation.x = -Math.PI / 2;
-scene.add(ground);
-
-// ---------- Пиксель текстуралар (procedural, Minecraft стилі) ----------
-// Псевдо-кездейсоқ (тұрақты көрініс үшін seed'пен)
-function makeNoise(seed) {
-  let s = seed;
-  return () => { s = (s * 1103515245 + 12345) & 0x7fffffff; return s / 0x7fffffff; };
-}
-// 16×16 пиксельді текстура: base түс + дақтар
-function pixelTexture(base, spots, seed) {
-  const N = 16, c = document.createElement('canvas');
-  c.width = c.height = N;
-  const g = c.getContext('2d');
-  const rnd = makeNoise(seed);
-  g.fillStyle = base; g.fillRect(0, 0, N, N);
-  for (let y = 0; y < N; y++) for (let x = 0; x < N; x++) {
-    if (rnd() < 0.35) {
-      g.fillStyle = spots[Math.floor(rnd() * spots.length)];
-      g.fillRect(x, y, 1, 1);
+// Нүктеге ең жақын stroke пен нүкте индексін табу
+function nearestStroke(x, y, maxR) {
+  let best = null, bestD = maxR;
+  for (const s of strokes) {
+    for (let i = 0; i < s.pts.length; i++) {
+      const d = dist2D(x, y, s.pts[i].x, s.pts[i].y);
+      if (d < bestD) { bestD = d; best = { stroke: s, index: i, d }; }
     }
   }
-  const t = new THREE.CanvasTexture(c);
-  t.magFilter = THREE.NearestFilter;   // пиксельді (тегіс емес) көрініс
-  t.minFilter = THREE.NearestFilter;
-  return t;
+  return best;
 }
-// Шөп блогының бүйірі: топырақ + үстіңгі жасыл жолақ
-function grassSide(seed) {
-  const N = 16, c = document.createElement('canvas');
-  c.width = c.height = N;
-  const g = c.getContext('2d');
-  const rnd = makeNoise(seed);
-  g.fillStyle = '#8a5a2b'; g.fillRect(0, 0, N, N);
-  for (let y = 0; y < N; y++) for (let x = 0; x < N; x++) {
-    if (rnd() < 0.35) { g.fillStyle = ['#7a4d24','#966532','#734821'][Math.floor(rnd()*3)]; g.fillRect(x, y, 1, 1); }
+
+// ---------- Жарқыраған сызу ----------
+function drawStroke(s, glow) {
+  if (s.pts.length < 2) {
+    // жалғыз нүкте — жарқыраған дақ
+    if (s.pts.length === 1) {
+      const p = s.pts[0];
+      ctx.beginPath();
+      ctx.fillStyle = s.color;
+      ctx.shadowBlur = glow; ctx.shadowColor = s.color;
+      ctx.arc(p.x, p.y, 3, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    return;
   }
-  for (let x = 0; x < N; x++) {
-    const h = 3 + Math.floor(rnd() * 3);
-    g.fillStyle = ['#6aa84f','#7ec850','#5c923f'][Math.floor(rnd()*3)];
-    g.fillRect(x, 0, 1, h);
-  }
-  const t = new THREE.CanvasTexture(c);
-  t.magFilter = THREE.NearestFilter; t.minFilter = THREE.NearestFilter;
-  return t;
-}
-function matOf(tex) { return new THREE.MeshLambertMaterial({ map: tex }); }
-
-// Текстураларды бір рет жасаймыз (кэш)
-const T = {
-  grassTop: matOf(pixelTexture('#7ec850', ['#6aa84f','#8fd861','#5c923f'], 11)),
-  dirt:     matOf(pixelTexture('#8a5a2b', ['#7a4d24','#966532','#734821'], 22)),
-  grassSide:matOf(grassSide(33)),
-  stone:    matOf(pixelTexture('#8f8f8f', ['#7d7d7d','#9d9d9d','#6f6f6f'], 44)),
-  planks:   matOf(pixelTexture('#b3853f', ['#a5762f','#c2954b','#96692a'], 55)),
-  sand:     matOf(pixelTexture('#e6d59a', ['#dcc985','#efe1ad','#d2bd78'], 66)),
-  brick:    matOf(pixelTexture('#a8412f', ['#963726','#b94d3a','#8a3121'], 77)),
-};
-// BoxGeometry материал реті: [+x, -x, +y(үст), -y(аст), +z, -z]
-const BLOCK_TYPES = [
-  { name: 'Шөп',     preview: '#7ec850', faces: [T.grassSide, T.grassSide, T.grassTop, T.dirt, T.grassSide, T.grassSide] },
-  { name: 'Топырақ', preview: '#8a5a2b', faces: T.dirt },
-  { name: 'Тас',     preview: '#8f8f8f', faces: T.stone },
-  { name: 'Ағаш',    preview: '#b3853f', faces: T.planks },
-  { name: 'Құм',     preview: '#e6d59a', faces: T.sand },
-  { name: 'Кірпіш',  preview: '#a8412f', faces: T.brick },
-];
-let currentType = 0;
-
-// ---------- Блоктар ----------
-const BS = 1; // блок өлшемі
-const blockGeo = new THREE.BoxGeometry(BS, BS, BS);
-const edgeGeo = new THREE.EdgesGeometry(blockGeo);
-const blocks = new Map(); // "x,y,z" -> mesh
-
-function keyOf(x, y, z) { return `${x},${y},${z}`; }
-
-function addBlock(gx, gy, gz, typeIdx) {
-  const k = keyOf(gx, gy, gz);
-  if (blocks.has(k)) return false;
-  if (gx < -GRID/2 || gx >= GRID/2 || gz < -GRID/2 || gz >= GRID/2 || gy < 0) return false;
-  const mesh = new THREE.Mesh(blockGeo, BLOCK_TYPES[typeIdx].faces);
-  mesh.position.set(gx + 0.5, gy + 0.5, gz + 0.5);
-  const line = new THREE.LineSegments(edgeGeo, new THREE.LineBasicMaterial({ color: 0x000000, transparent: true, opacity: 0.18 }));
-  mesh.add(line);
-  mesh.userData.cell = { gx, gy, gz };
-  scene.add(mesh);
-  blocks.set(k, mesh);
-  return true;
-}
-
-function removeBlockAt(mesh) {
-  const c = mesh.userData.cell;
-  scene.remove(mesh);
-  blocks.delete(keyOf(c.gx, c.gy, c.gz));
-}
-
-// ---------- Cursor (нысана) ----------
-const cursorGeo = new THREE.BoxGeometry(BS * 1.02, BS * 1.02, BS * 1.02);
-const cursor = new THREE.LineSegments(
-  new THREE.EdgesGeometry(cursorGeo),
-  new THREE.LineBasicMaterial({ color: 0xffffff })
-);
-cursor.visible = false;
-scene.add(cursor);
-
-const raycaster = new THREE.Raycaster();
-
-// Экран нүктесінен (NDC) target ұяшықты табу
-function pickCell(ndc) {
-  raycaster.setFromCamera(ndc, camera);
-  const hits = raycaster.intersectObjects([...blocks.values(), ground], false);
-  if (!hits.length) return null;
-  const h = hits[0];
-  if (h.object === ground) {
-    const gx = Math.floor(h.point.x);
-    const gz = Math.floor(h.point.z);
-    return { place: { gx, gy: 0, gz }, hitMesh: null };
-  } else {
-    // блок беті — көрші ұяшық (қою) немесе сол блок (өшіру)
-    const c = h.object.userData.cell;
-    const n = h.face.normal;
-    return {
-      place: { gx: c.gx + Math.round(n.x), gy: c.gy + Math.round(n.y), gz: c.gz + Math.round(n.z) },
-      hitMesh: h.object
-    };
-  }
+  const path = () => {
+    ctx.beginPath();
+    ctx.moveTo(s.pts[0].x, s.pts[0].y);
+    for (let i = 1; i < s.pts.length; i++) ctx.lineTo(s.pts[i].x, s.pts[i].y);
+  };
+  ctx.lineJoin = 'round';
+  ctx.lineCap = 'round';
+  // 1) кең жұмсақ жарық
+  ctx.shadowBlur = glow; ctx.shadowColor = s.color;
+  ctx.strokeStyle = s.color; ctx.globalAlpha = 0.35; ctx.lineWidth = 12;
+  path(); ctx.stroke();
+  // 2) негізгі өзек
+  ctx.globalAlpha = 0.9; ctx.lineWidth = 4;
+  path(); ctx.stroke();
+  // 3) ақ ыстық өзек
+  ctx.shadowBlur = 0; ctx.globalAlpha = 0.95; ctx.strokeStyle = '#ffffff'; ctx.lineWidth = 1.5;
+  path(); ctx.stroke();
+  ctx.globalAlpha = 1;
 }
 
 // ---------- Overlay (қол қаңқасы) ----------
-const overlay = document.getElementById('overlay');
-const octx = overlay.getContext('2d');
-
 const HAND_CONNECTIONS = [
-  [0,1],[1,2],[2,3],[3,4],
-  [0,5],[5,6],[6,7],[7,8],
-  [5,9],[9,10],[10,11],[11,12],
-  [9,13],[13,14],[14,15],[15,16],
-  [13,17],[17,18],[18,19],[19,20],
-  [0,17]
+  [0,1],[1,2],[2,3],[3,4],[0,5],[5,6],[6,7],[7,8],
+  [5,9],[9,10],[10,11],[11,12],[9,13],[13,14],[14,15],[15,16],
+  [13,17],[17,18],[18,19],[19,20],[0,17]
 ];
-
 function drawHand(lm, w, h, color) {
-  octx.strokeStyle = color;
-  octx.lineWidth = 3;
+  ctx.save();
+  ctx.shadowBlur = 0; ctx.globalAlpha = 0.5;
+  ctx.strokeStyle = color; ctx.lineWidth = 2;
   for (const [a, b] of HAND_CONNECTIONS) {
-    octx.beginPath();
-    octx.moveTo(lm[a].x * w, lm[a].y * h);
-    octx.lineTo(lm[b].x * w, lm[b].y * h);
-    octx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(lm[a].x * w, lm[a].y * h);
+    ctx.lineTo(lm[b].x * w, lm[b].y * h);
+    ctx.stroke();
   }
-  octx.fillStyle = '#fff';
-  for (const p of lm) {
-    octx.beginPath();
-    octx.arc(p.x * w, p.y * h, 3, 0, Math.PI * 2);
-    octx.fill();
-  }
+  ctx.restore();
+}
+
+// Курсор (жест түсіне қарай)
+function drawCursor(x, y, color, r) {
+  ctx.save();
+  ctx.shadowBlur = 18; ctx.shadowColor = color;
+  ctx.strokeStyle = color; ctx.lineWidth = 2; ctx.globalAlpha = 0.9;
+  ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.stroke();
+  ctx.beginPath(); ctx.arc(x, y, 2.5, 0, Math.PI * 2); ctx.fillStyle = color; ctx.fill();
+  ctx.restore();
 }
 
 // ---------- Жест тану ----------
-function dist(a, b) {
-  return Math.hypot(a.x - b.x, a.y - b.y, (a.z||0) - (b.z||0));
-}
-// Саусақ ашық па (tip ұшы pip буынынан алақаннан алыс па)
-function fingerUp(lm, tip, pip) {
-  return dist(lm[tip], lm[0]) > dist(lm[pip], lm[0]) * 1.05;
-}
+function d3(a, b) { return Math.hypot(a.x-b.x, a.y-b.y, (a.z||0)-(b.z||0)); }
+function fingerUp(lm, tip, pip) { return d3(lm[tip], lm[0]) > d3(lm[pip], lm[0]) * 1.05; }
 
 function detectGesture(lm) {
-  const thumbIndex = dist(lm[4], lm[8]);
-  const scale = dist(lm[0], lm[9]) || 1; // қол өлшеміне қалыпқа келтіру
-  const pinch = (thumbIndex / scale) < 0.4;
-
+  const scale = d3(lm[0], lm[9]) || 1;
+  const pinch = (d3(lm[4], lm[8]) / scale) < 0.45;
   const idx = fingerUp(lm, 8, 6);
   const mid = fingerUp(lm, 12, 10);
   const rng = fingerUp(lm, 16, 14);
   const pky = fingerUp(lm, 20, 18);
   const up = [idx, mid, rng, pky].filter(Boolean).length;
 
-  if (pinch) return 'pinch';
-  if (idx && mid && !rng && !pky) return 'delete';   // ✌️
-  if (up >= 4) return 'draw';                          // 🖐️
-  if (up === 0) return 'rotate';                       // ✊
-  if (idx && !mid) return 'aim';                       // ☝️
-  return 'aim';
+  if (pinch) return 'grab';                       // 🤏 ұстау
+  if (idx && mid && !rng && !pky) return 'cut';   // ✌️ кесу
+  if (idx && !mid) return 'draw';                 // ☝️ сызу
+  return 'idle';                                  // ✊/🖐️ тыныш
 }
-
-const MODE_LABEL = {
-  pinch: '🤏 Блок қою', delete: '✌️ Өшіру', draw: '🖐️ Сызу',
-  rotate: '✊ Айналдыру', aim: '☝️ Нысана'
-};
+const MODE_LABEL = { draw: '☝️ Сызу', grab: '🤏 Ұстап жүру', cut: '✌️ Кесу', idle: '✋ Тыныш' };
 
 // ---------- Күй ----------
-let cursorNDC = null;      // соңғы курсор
-let lastGesture = 'aim';
-let placedCellKey = null;  // pinch кезінде қайталамау үшін
-let deletedThisGesture = false;
-let rotAnchor = null;      // жұдырық орбитасы
+let lastGesture = 'idle';
 
 // ---------- MediaPipe ----------
-const video = document.getElementById('cam');
-const loader = document.getElementById('loader');
-
 const hands = new Hands({
   locateFile: (f) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4.1675469240/${f}`
 });
 hands.setOptions({
   maxNumHands: 1,
-  modelComplexity: 0,        // жеңіл модель (RAM аз машинаға)
+  modelComplexity: 0,
   minDetectionConfidence: 0.6,
   minTrackingConfidence: 0.6
 });
@@ -261,69 +136,96 @@ let fps = 0;
 
 hands.onResults((res) => {
   const w = overlay.width, h = overlay.height;
-  octx.clearRect(0, 0, w, h);
 
   const now = performance.now();
   fps = 0.9 * fps + 0.1 * (1000 / (now - lastTime));
   lastTime = now;
   document.getElementById('fps').textContent = 'FPS: ' + fps.toFixed(0);
 
+  const color = COLORS[currentColor];
+
+  // Пульстеп жарқырау
+  const glow = 16 + 8 * Math.abs(Math.sin(now / 500));
+
+  // Фонды тазарту (сызықтар жарқырауы қосылсын)
+  ctx.clearRect(0, 0, w, h);
+  ctx.globalCompositeOperation = 'lighter';
+  for (const s of strokes) drawStroke(s, glow);
+  if (activeStroke) drawStroke(activeStroke, glow);
+  ctx.globalCompositeOperation = 'source-over';
+
   if (!res.multiHandLandmarks || !res.multiHandLandmarks.length) {
-    cursor.visible = false;
     document.getElementById('mode').textContent = 'Режим: қол көрінбейді';
+    activeStroke = null; grabbed = null; lastGesture = 'idle';
     return;
   }
 
   const lm = res.multiHandLandmarks[0];
   const g = detectGesture(lm);
-  document.getElementById('mode').textContent = 'Режим: ' + (MODE_LABEL[g] || g);
-  drawHand(lm, w, h, BLOCK_TYPES[currentType].preview);
+  document.getElementById('mode').textContent = 'Режим: ' + MODE_LABEL[g];
+  drawHand(lm, w, h, color);
 
-  // Курсор: көрсеткіш саусақ ұшы (landmark 8). Видео айналы → x-ті аударамыз
-  const tip = lm[8];
-  const sx = (1 - tip.x);            // 0..1 (экран, айналы ескерілген)
-  const sy = tip.y;
-  cursorNDC = new THREE.Vector2(sx * 2 - 1, -(sy * 2 - 1));
+  // Курсор нүктесі: сызуда — көрсеткіш ұшы(8); ұстауда — бармақ+саусақ ортасы
+  let cx, cy;
+  if (g === 'grab') { cx = (lm[4].x + lm[8].x) / 2 * w; cy = (lm[4].y + lm[8].y) / 2 * h; }
+  else { cx = lm[8].x * w; cy = lm[8].y * h; }
 
-  // Gesture ауысса — күйді тазарту
+  // Жест ауысса — күйді жабу
   if (g !== lastGesture) {
-    placedCellKey = null;
-    deletedThisGesture = false;
-    rotAnchor = null;
+    if (lastGesture === 'draw' && activeStroke) {
+      if (activeStroke.pts.length) strokes.push(activeStroke);
+      activeStroke = null;
+    }
+    if (lastGesture === 'grab') grabbed = null;
     lastGesture = g;
   }
 
-  if (g === 'rotate') {
-    // Жұдырық: курсор жылжуымен камераны айналдыру
-    if (!rotAnchor) rotAnchor = { x: sx, y: sy, az: orbit.az, pol: orbit.pol };
-    orbit.az = rotAnchor.az + (sx - rotAnchor.x) * 4;
-    orbit.pol = Math.max(0.15, Math.min(1.5, rotAnchor.pol - (sy - rotAnchor.y) * 3));
-    updateCamera();
-    cursor.visible = false;
-    return;
-  }
+  if (g === 'draw') {
+    if (!activeStroke) activeStroke = { pts: [], color };
+    const p = activeStroke.pts[activeStroke.pts.length - 1];
+    if (!p || dist2D(p.x, p.y, cx, cy) > MIN_DIST) activeStroke.pts.push({ x: cx, y: cy });
+    drawCursor(cx, cy, color, 6);
 
-  const pick = pickCell(cursorNDC);
-  if (!pick) { cursor.visible = false; return; }
-
-  cursor.visible = true;
-  cursor.position.set(pick.place.gx + 0.5, pick.place.gy + 0.5, pick.place.gz + 0.5);
-
-  if (g === 'pinch' || g === 'draw') {
-    const k = keyOf(pick.place.gx, pick.place.gy, pick.place.gz);
-    // pinch — әр жаңа ұяшыққа бір рет; draw — үздіксіз (ізбен)
-    if (g === 'draw' || k !== placedCellKey) {
-      if (addBlock(pick.place.gx, pick.place.gy, pick.place.gz, currentType)) {
-        placedCellKey = k;
-      }
+  } else if (g === 'grab') {
+    if (!grabbed) {
+      const near = nearestStroke(cx, cy, GRAB_R);
+      if (near) grabbed = { stroke: near.stroke, lastX: cx, lastY: cy };
     }
-  } else if (g === 'delete') {
-    if (!deletedThisGesture && pick.hitMesh) {
-      removeBlockAt(pick.hitMesh);
-      deletedThisGesture = true;
+    if (grabbed) {
+      const dx = cx - grabbed.lastX, dy = cy - grabbed.lastY;
+      for (const pt of grabbed.stroke.pts) { pt.x += dx; pt.y += dy; }
+      grabbed.lastX = cx; grabbed.lastY = cy;
+      drawCursor(cx, cy, '#ffffff', 10);
+    } else {
+      drawCursor(cx, cy, '#ffffff', GRAB_R);   // ұстайтын аймақты көрсету
     }
+
+  } else if (g === 'cut') {
+    cutAt(cx, cy, GRAB_R * 0.5);
+    drawCursor(cx, cy, '#ff4d4d', GRAB_R * 0.5);
+
+  } else {
+    drawCursor(cx, cy, color, 5);
   }
 });
+
+// Курсорға жақын нүктелерді өшіріп, сызықты бөлу (кесу)
+function cutAt(x, y, r) {
+  const next = [];
+  for (const s of strokes) {
+    let seg = [];
+    for (const pt of s.pts) {
+      if (dist2D(pt.x, pt.y, x, y) < r) {
+        if (seg.length >= 2) next.push({ pts: seg, color: s.color });
+        seg = [];
+      } else {
+        seg.push(pt);
+      }
+    }
+    if (seg.length >= 2) next.push({ pts: seg, color: s.color });
+  }
+  strokes = next;
+}
 
 // ---------- Камера ----------
 const mpCamera = new Camera(video, {
@@ -331,31 +233,19 @@ const mpCamera = new Camera(video, {
   width: 640,
   height: 480
 });
-
 mpCamera.start()
-  .then(() => { loader.classList.add('hidden'); })
+  .then(() => loader.classList.add('hidden'))
   .catch((e) => { loader.innerHTML = 'Камераға қол жеткізу қатесі:<br><small>' + e.message + '</small>'; });
 
-// ---------- Рендер циклі ----------
-function animate() {
-  requestAnimationFrame(animate);
-  if (cursor.visible) {
-    cursor.material.opacity = 0.5 + 0.5 * Math.abs(Math.sin(performance.now() / 300));
-    cursor.material.transparent = true;
-  }
-  renderer.render(scene, camera);
-}
-animate();
-
-// ---------- Палитра UI (блок түрлері) ----------
+// ---------- Палитра UI ----------
 const paletteEl = document.getElementById('palette');
-BLOCK_TYPES.forEach((bt, i) => {
+COLORS.forEach((c, i) => {
   const s = document.createElement('div');
   s.className = 'swatch' + (i === 0 ? ' active' : '');
-  s.style.background = bt.preview;
-  s.title = bt.name;
+  s.style.background = c;
+  s.style.color = c;
   s.onclick = () => {
-    currentType = i;
+    currentColor = i;
     document.querySelectorAll('.swatch').forEach(el => el.classList.remove('active'));
     s.classList.add('active');
   };
@@ -364,24 +254,18 @@ BLOCK_TYPES.forEach((bt, i) => {
 
 // ---------- Resize ----------
 function resize() {
-  const w = window.innerWidth, h = window.innerHeight;
-  renderer.setSize(w, h);
-  camera.aspect = w / h;
-  camera.updateProjectionMatrix();
-  overlay.width = w;
-  overlay.height = h;
+  overlay.width = window.innerWidth;
+  overlay.height = window.innerHeight;
 }
 window.addEventListener('resize', resize);
 resize();
 
-// Пернетақта: блок таңдау (1-6), C — тазарту
+// ---------- Пернетақта: түс (1-6), C — тазарту, Z — соңғыны өшіру ----------
 window.addEventListener('keydown', (e) => {
   if (e.key >= '1' && e.key <= '6') {
     const i = +e.key - 1;
-    if (i < BLOCK_TYPES.length) document.querySelectorAll('.swatch')[i].click();
+    if (i < COLORS.length) document.querySelectorAll('.swatch')[i].click();
   }
-  if (e.key.toLowerCase() === 'c') {
-    [...blocks.values()].forEach(m => scene.remove(m));
-    blocks.clear();
-  }
+  if (e.key.toLowerCase() === 'c') strokes = [];
+  if (e.key.toLowerCase() === 'z') strokes.pop();
 });
