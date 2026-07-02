@@ -46,9 +46,73 @@ const ground = new THREE.Mesh(groundGeo, new THREE.MeshBasicMaterial({ visible: 
 ground.rotation.x = -Math.PI / 2;
 scene.add(ground);
 
+// ---------- Пиксель текстуралар (procedural, Minecraft стилі) ----------
+// Псевдо-кездейсоқ (тұрақты көрініс үшін seed'пен)
+function makeNoise(seed) {
+  let s = seed;
+  return () => { s = (s * 1103515245 + 12345) & 0x7fffffff; return s / 0x7fffffff; };
+}
+// 16×16 пиксельді текстура: base түс + дақтар
+function pixelTexture(base, spots, seed) {
+  const N = 16, c = document.createElement('canvas');
+  c.width = c.height = N;
+  const g = c.getContext('2d');
+  const rnd = makeNoise(seed);
+  g.fillStyle = base; g.fillRect(0, 0, N, N);
+  for (let y = 0; y < N; y++) for (let x = 0; x < N; x++) {
+    if (rnd() < 0.35) {
+      g.fillStyle = spots[Math.floor(rnd() * spots.length)];
+      g.fillRect(x, y, 1, 1);
+    }
+  }
+  const t = new THREE.CanvasTexture(c);
+  t.magFilter = THREE.NearestFilter;   // пиксельді (тегіс емес) көрініс
+  t.minFilter = THREE.NearestFilter;
+  return t;
+}
+// Шөп блогының бүйірі: топырақ + үстіңгі жасыл жолақ
+function grassSide(seed) {
+  const N = 16, c = document.createElement('canvas');
+  c.width = c.height = N;
+  const g = c.getContext('2d');
+  const rnd = makeNoise(seed);
+  g.fillStyle = '#8a5a2b'; g.fillRect(0, 0, N, N);
+  for (let y = 0; y < N; y++) for (let x = 0; x < N; x++) {
+    if (rnd() < 0.35) { g.fillStyle = ['#7a4d24','#966532','#734821'][Math.floor(rnd()*3)]; g.fillRect(x, y, 1, 1); }
+  }
+  for (let x = 0; x < N; x++) {
+    const h = 3 + Math.floor(rnd() * 3);
+    g.fillStyle = ['#6aa84f','#7ec850','#5c923f'][Math.floor(rnd()*3)];
+    g.fillRect(x, 0, 1, h);
+  }
+  const t = new THREE.CanvasTexture(c);
+  t.magFilter = THREE.NearestFilter; t.minFilter = THREE.NearestFilter;
+  return t;
+}
+function matOf(tex) { return new THREE.MeshLambertMaterial({ map: tex }); }
+
+// Текстураларды бір рет жасаймыз (кэш)
+const T = {
+  grassTop: matOf(pixelTexture('#7ec850', ['#6aa84f','#8fd861','#5c923f'], 11)),
+  dirt:     matOf(pixelTexture('#8a5a2b', ['#7a4d24','#966532','#734821'], 22)),
+  grassSide:matOf(grassSide(33)),
+  stone:    matOf(pixelTexture('#8f8f8f', ['#7d7d7d','#9d9d9d','#6f6f6f'], 44)),
+  planks:   matOf(pixelTexture('#b3853f', ['#a5762f','#c2954b','#96692a'], 55)),
+  sand:     matOf(pixelTexture('#e6d59a', ['#dcc985','#efe1ad','#d2bd78'], 66)),
+  brick:    matOf(pixelTexture('#a8412f', ['#963726','#b94d3a','#8a3121'], 77)),
+};
+// BoxGeometry материал реті: [+x, -x, +y(үст), -y(аст), +z, -z]
+const BLOCK_TYPES = [
+  { name: 'Шөп',     preview: '#7ec850', faces: [T.grassSide, T.grassSide, T.grassTop, T.dirt, T.grassSide, T.grassSide] },
+  { name: 'Топырақ', preview: '#8a5a2b', faces: T.dirt },
+  { name: 'Тас',     preview: '#8f8f8f', faces: T.stone },
+  { name: 'Ағаш',    preview: '#b3853f', faces: T.planks },
+  { name: 'Құм',     preview: '#e6d59a', faces: T.sand },
+  { name: 'Кірпіш',  preview: '#a8412f', faces: T.brick },
+];
+let currentType = 0;
+
 // ---------- Блоктар ----------
-const PALETTE = ['#7ec850', '#c8873f', '#5aa9e6', '#e6577a', '#f2c14e', '#e8eef5'];
-let currentColor = 0;
 const BS = 1; // блок өлшемі
 const blockGeo = new THREE.BoxGeometry(BS, BS, BS);
 const edgeGeo = new THREE.EdgesGeometry(blockGeo);
@@ -56,14 +120,13 @@ const blocks = new Map(); // "x,y,z" -> mesh
 
 function keyOf(x, y, z) { return `${x},${y},${z}`; }
 
-function addBlock(gx, gy, gz, colorHex) {
+function addBlock(gx, gy, gz, typeIdx) {
   const k = keyOf(gx, gy, gz);
   if (blocks.has(k)) return false;
   if (gx < -GRID/2 || gx >= GRID/2 || gz < -GRID/2 || gz >= GRID/2 || gy < 0) return false;
-  const mat = new THREE.MeshLambertMaterial({ color: colorHex });
-  const mesh = new THREE.Mesh(blockGeo, mat);
+  const mesh = new THREE.Mesh(blockGeo, BLOCK_TYPES[typeIdx].faces);
   mesh.position.set(gx + 0.5, gy + 0.5, gz + 0.5);
-  const line = new THREE.LineSegments(edgeGeo, new THREE.LineBasicMaterial({ color: 0x000000, transparent: true, opacity: 0.25 }));
+  const line = new THREE.LineSegments(edgeGeo, new THREE.LineBasicMaterial({ color: 0x000000, transparent: true, opacity: 0.18 }));
   mesh.add(line);
   mesh.userData.cell = { gx, gy, gz };
   scene.add(mesh);
@@ -214,7 +277,7 @@ hands.onResults((res) => {
   const lm = res.multiHandLandmarks[0];
   const g = detectGesture(lm);
   document.getElementById('mode').textContent = 'Режим: ' + (MODE_LABEL[g] || g);
-  drawHand(lm, w, h, PALETTE[currentColor]);
+  drawHand(lm, w, h, BLOCK_TYPES[currentType].preview);
 
   // Курсор: көрсеткіш саусақ ұшы (landmark 8). Видео айналы → x-ті аударамыз
   const tip = lm[8];
@@ -250,7 +313,7 @@ hands.onResults((res) => {
     const k = keyOf(pick.place.gx, pick.place.gy, pick.place.gz);
     // pinch — әр жаңа ұяшыққа бір рет; draw — үздіксіз (ізбен)
     if (g === 'draw' || k !== placedCellKey) {
-      if (addBlock(pick.place.gx, pick.place.gy, pick.place.gz, PALETTE[currentColor])) {
+      if (addBlock(pick.place.gx, pick.place.gy, pick.place.gz, currentType)) {
         placedCellKey = k;
       }
     }
@@ -284,14 +347,15 @@ function animate() {
 }
 animate();
 
-// ---------- Палитра UI ----------
+// ---------- Палитра UI (блок түрлері) ----------
 const paletteEl = document.getElementById('palette');
-PALETTE.forEach((c, i) => {
+BLOCK_TYPES.forEach((bt, i) => {
   const s = document.createElement('div');
   s.className = 'swatch' + (i === 0 ? ' active' : '');
-  s.style.background = c;
+  s.style.background = bt.preview;
+  s.title = bt.name;
   s.onclick = () => {
-    currentColor = i;
+    currentType = i;
     document.querySelectorAll('.swatch').forEach(el => el.classList.remove('active'));
     s.classList.add('active');
   };
@@ -310,11 +374,11 @@ function resize() {
 window.addEventListener('resize', resize);
 resize();
 
-// Пернетақта: түс ауыстыру (1-6), C — тазарту
+// Пернетақта: блок таңдау (1-6), C — тазарту
 window.addEventListener('keydown', (e) => {
   if (e.key >= '1' && e.key <= '6') {
     const i = +e.key - 1;
-    if (i < PALETTE.length) document.querySelectorAll('.swatch')[i].click();
+    if (i < BLOCK_TYPES.length) document.querySelectorAll('.swatch')[i].click();
   }
   if (e.key.toLowerCase() === 'c') {
     [...blocks.values()].forEach(m => scene.remove(m));
