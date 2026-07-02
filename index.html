@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html lang="kk">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>HandCraft — қолмен блок қою</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <!-- Камера ағыны (артқы фон ретінде айналы көрсетіледі) -->
+  <video id="cam" playsinline></video>
+
+  <!-- Қол қаңқасын салатын overlay -->
+  <canvas id="overlay"></canvas>
+
+  <!-- Three.js 3D әлемі -->
+  <div id="scene"></div>
+
+  <!-- UI -->
+  <div id="hud">
+    <div class="row">
+      <span class="badge" id="mode">Режим: —</span>
+      <span class="badge" id="fps">FPS: —</span>
+    </div>
+    <div class="palette" id="palette"></div>
+    <div class="hint">
+      ✊ жұдырық — айналдыру · ☝️ көрсеткіш — нысана · 🤏 pinch — блок қою ·
+      ✌️ V (екі саусақ) — блок өшіру · 🖐️ алақан — сызық сызу
+    </div>
+  </div>
+
+  <div id="loader">Камера мен модель жүктелуде…<br /><small>рұқсат сұралса — «Allow» бас</small></div>
+
+  <!-- CDN кітапханалар -->
+  <script src="https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4.1675469240/hands.js" crossorigin="anonymous"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils@0.3.1675466862/camera_utils.js" crossorigin="anonymous"></script>
+  <script src="app.js"></script>
+</body>
+</html>
